@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 构建产物
+*.spec
+*.bat
+*.zip
+*.exe
+*.pkg
+
+# 日志文件
+build_err*.txt
+build_log*.txt
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 其他
+__pycache__/
+.env

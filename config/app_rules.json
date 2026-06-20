@@ -1,0 +1,132 @@
+{
+  "WeChat": {
+    "process_names": ["WeChat.exe"],
+    "tombstone_mode": "suspend",
+    "never_suspend": {
+      "description": "语音/视频通话时不墓碑",
+      "detect_window_class": ["WeChatVoipWindow", "VoipWindow"],
+      "detect_child_process": ["WeChatVoipHelper.exe"]
+    },
+    "transient_awake": {
+      "description": "新消息通知时短暂唤醒",
+      "wake_duration_sec": 4,
+      "detect_window_title_contains": ["[消息]"]
+    }
+  },
+  "QQ": {
+    "process_names": ["QQ.exe", "QQGuild.exe"],
+    "tombstone_mode": "suspend",
+    "never_suspend": {
+      "description": "语音/视频通话时不墓碑",
+      "detect_window_class": ["QQVoipWindow"],
+      "detect_child_process": ["QQVoipHelper.exe"]
+    },
+    "transient_awake": {
+      "description": "新消息时短暂唤醒",
+      "wake_duration_sec": 3,
+      "detect_window_title_flash": true
+    }
+  },
+  "DingTalk": {
+    "process_names": ["DingTalk.exe"],
+    "tombstone_mode": "suspend",
+    "never_suspend": {
+      "description": "语音/视频通话时不墓碑",
+      "detect_window_class": ["DingTalkVoip"],
+      "detect_child_process": ["DingTalkHelper.exe"]
+    },
+    "transient_awake": {
+      "description": "新消息通知时短暂唤醒",
+      "wake_duration_sec": 4,
+      "detect_window_title_contains": ["钉钉"]
+    }
+  },
+  "TencentMeeting": {
+    "process_names": ["wemeet.exe", "TencentMeeting.exe"],
+    "tombstone_mode": "suspend",
+    "never_suspend": {
+      "description": "会议进行中全程不墓碑",
+      "detect_always": true
+    },
+    "transient_awake": null
+  },
+  "Feishu": {
+    "process_names": ["Feishu.exe"],
+    "tombstone_mode": "suspend",
+    "never_suspend": {
+      "description": "语音/视频通话时不墓碑",
+      "detect_window_class": ["FeishuVoip"],
+      "detect_child_process": ["FeishuHelper.exe"]
+    },
+    "transient_awake": {
+      "description": "新消息时短暂唤醒",
+      "wake_duration_sec": 3,
+      "detect_window_title_contains": ["飞书"]
+    }
+  },
+  "Qianwen": {
+    "process_names": ["qianwen.exe"],
+    "tombstone_mode": "kill",
+    "never_suspend": {
+      "description": "千问AI助手：有可见窗口时不墓碑",
+      "detect_visible_window": true
+    },
+    "transient_awake": {
+      "description": "收到通知时短暂唤醒",
+      "wake_duration_sec": 5,
+      "detect_window_title_contains": ["千问", "Qianwen", "通义"]
+    }
+  },
+  "Doubao": {
+    "process_names": ["doubao.exe"],
+    "tombstone_mode": "kill",
+    "never_suspend": {
+      "description": "豆包AI助手：有可见窗口时不墓碑",
+      "detect_visible_window": true
+    },
+    "transient_awake": {
+      "description": "收到通知时短暂唤醒",
+      "wake_duration_sec": 5,
+      "detect_window_title_contains": ["豆包", "Doubao"]
+    }
+  },
+  "Yuanbao": {
+    "process_names": ["yuanbao.exe"],
+    "tombstone_mode": "kill",
+    "never_suspend": {
+      "description": "元宝AI助手：有可见窗口时不墓碑",
+      "detect_visible_window": true
+    },
+    "transient_awake": {
+      "description": "收到通知时短暂唤醒",
+      "wake_duration_sec": 5,
+      "detect_window_title_contains": ["元宝", "Yuanbao"]
+    }
+  },
+  "ChatGPT": {
+    "process_names": ["chatgpt.exe"],
+    "tombstone_mode": "kill",
+    "never_suspend": {
+      "description": "ChatGPT：有可见窗口时不墓碑",
+      "detect_visible_window": true
+    },
+    "transient_awake": {
+      "description": "收到通知时短暂唤醒",
+      "wake_duration_sec": 5,
+      "detect_window_title_contains": ["ChatGPT"]
+    }
+  },
+  "Copilot": {
+    "process_names": ["microsoftcopilot.exe"],
+    "tombstone_mode": "kill",
+    "never_suspend": {
+      "description": "Copilot：有可见窗口时不墓碑",
+      "detect_visible_window": true
+    },
+    "transient_awake": {
+      "description": "收到通知时短暂唤醒",
+      "wake_duration_sec": 5,
+      "detect_window_title_contains": ["Copilot"]
+    }
+  }
+}
