@@ -132,6 +132,9 @@ USER_CHAT_APPS: Dict[str, dict] = {}
 # 内置聊天软件 → 打开群聊面板（飞书风格，AI 之间互相交流）
 CHAT_GROUP_APPS = {"微信", "QQ", "钉钉", "飞书", "腾讯会议"}
 
+# 通知过滤：这些聊天软件的消息不显示在通知中心
+NOTIFICATION_BLOCKED_APPS = {"微信", "QQ", "钉钉", "飞书", "腾讯会议"}
+
 # 系统进程黑名单（不会出现在扫描结果中）
 SCAN_BLACKLIST = {
     "system idle process", "system", "registry", "smss.exe", "csrss.exe",
@@ -412,6 +415,7 @@ class AppListPanel(QWidget):
     autostart_toggled = Signal(bool)  # enabled
     add_to_chat_requested = Signal(str)  # app_name - 添加到聊天
     remove_from_chat_requested = Signal(str)  # app_name - 从聊天移除
+    create_group_chat_requested = Signal()  # 点击"+"创建群聊
 
     def __init__(self, icon_cache: IconCache):
         super().__init__()
@@ -439,6 +443,20 @@ class AppListPanel(QWidget):
         logo.setStyleSheet(f"font-size: 18px; font-weight: 900; color: {COLOR['accent_blue']}; letter-spacing: 2px;")
         h_layout.addWidget(logo)
         h_layout.addStretch()
+
+        # 加号按钮：创建群聊
+        self.add_group_btn = QPushButton("+")
+        self.add_group_btn.setFixedSize(28, 28)
+        self.add_group_btn.setToolTip("创建群聊")
+        self.add_group_btn.setStyleSheet(f"""
+            QPushButton {{ background: {COLOR['accent_green']}; color: {COLOR['bg_tertiary']}; 
+                border: none; border-radius: 14px; font-size: 16px; font-weight: bold; }}
+            QPushButton:hover {{ background: {COLOR['accent_teal']}; }}
+        """)
+        self.add_group_btn.clicked.connect(self.create_group_chat_requested.emit)
+        h_layout.addWidget(self.add_group_btn)
+
+        h_layout.addSpacing(4)
 
         # 全部通知按钮
         self.all_btn = QPushButton("全部")
@@ -1074,6 +1092,7 @@ class MainWindow(QMainWindow):
         self.app_list.autostart_toggled.connect(self._set_autostart)
         self.app_list.add_to_chat_requested.connect(self._on_add_app_to_chat)
         self.app_list.remove_from_chat_requested.connect(self._on_remove_app_from_chat)
+        self.app_list.create_group_chat_requested.connect(self._on_create_group_chat)
         main_layout.addWidget(self.app_list)
 
         # 分隔线
@@ -1608,6 +1627,9 @@ class MainWindow(QMainWindow):
         target_procs = {name: info["procs"] for name, info in TARGET_APPS.items()}
 
         def on_notify(notification: Notification):
+            # 过滤：聊天软件的消息不显示在通知中心
+            if notification.app_name in NOTIFICATION_BLOCKED_APPS:
+                return
             # 主线程安全
             self.notify_panel.add_notification(notification)
             # 弹出顶部弹幕通知
@@ -2092,6 +2114,81 @@ class MainWindow(QMainWindow):
 
         idx = self._ai_panel_indices.get(provider_key, 2)
         self.right_stack.setCurrentIndex(idx)
+
+    def _on_create_group_chat(self):
+        """点击加号 → 弹出创建群聊对话框"""
+        from PySide6.QtWidgets import QDialog, QLineEdit as QDialogLineEdit
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("创建 AI 群聊")
+        dialog.setFixedSize(400, 280)
+        dialog.setStyleSheet(f"""
+            QDialog {{ background: {COLOR['bg_primary']}; }}
+            QLabel {{ color: {COLOR['text_primary']}; font-size: 13px; }}
+            QLineEdit {{ background: {COLOR['bg_secondary']}; color: {COLOR['text_primary']};
+                border: 1px solid {COLOR['bg_tertiary']}; border-radius: 6px; padding: 8px 12px; font-size: 13px; }}
+            QLineEdit:focus {{ border-color: {COLOR['accent_blue']}; }}
+            QPushButton {{ border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: bold; }}
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("✨ 创建 AI 群聊")
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {COLOR['accent_blue']};")
+        layout.addWidget(title)
+
+        desc = QLabel("输入群聊名称，创建一个 AI 群聊。\n配置了 API Key 的 AI 会自动加入群聊。")
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {COLOR['text_secondary']}; font-size: 12px;")
+        layout.addWidget(desc)
+
+        name_label = QLabel("群聊名称")
+        layout.addWidget(name_label)
+
+        name_input = QDialogLineEdit()
+        name_input.setPlaceholderText("例如：我的 AI 群聊、技术讨论组...")
+        name_input.setText("AI 群聊")
+        name_input.selectAll()
+        layout.addWidget(name_input)
+
+        layout.addStretch()
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {COLOR['text_muted']}; 
+                border: 1px solid {COLOR['text_muted']}; }}
+            QPushButton:hover {{ color: {COLOR['text_primary']}; border-color: {COLOR['text_primary']}; }}
+        """)
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        create_btn = QPushButton("创建群聊")
+        create_btn.setStyleSheet(f"""
+            QPushButton {{ background: {COLOR['accent_green']}; color: {COLOR['bg_tertiary']}; 
+                border: none; }}
+            QPushButton:hover {{ background: {COLOR['accent_teal']}; }}
+        """)
+
+        def on_create():
+            group_name = name_input.text().strip()
+            if not group_name:
+                return
+            dialog.accept()
+            # 打开群聊面板
+            self._show_group_chat(group_name)
+
+        create_btn.clicked.connect(on_create)
+        btn_layout.addWidget(create_btn)
+        layout.addLayout(btn_layout)
+
+        name_input.returnPressed.connect(on_create)
+        name_input.setFocus()
+        dialog.exec()
 
     def _show_group_chat(self, app_name: str):
         """显示飞书风格 AI 群聊面板（聊天软件专用）"""

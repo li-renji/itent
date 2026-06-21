@@ -19,7 +19,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel,
     QLineEdit, QPushButton, QFrame, QCheckBox, QSizePolicy,
-    QSpacerItem, QMenu,
+    QSpacerItem, QMenu, QTabWidget, QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QPoint
 from PySide6.QtGui import QFont
@@ -182,17 +182,10 @@ class AIGroupChatPanel(QWidget):
     
     布局：
     ┌──────────────────────────────────────┐
-    │  标题栏：📢 {群名}    [清空]         │
-    ├──────────┬───────────────────────────┤
-    │ 成员列表 │  消息区（滚动）            │
-    │ ☑ 千问   │  [用户]: 大家好           │
-    │ ☑ 豆包   │  [千问]: 你好！           │
-    │ ☑ 元宝   │  [豆包]: 今天聊什么？     │
-    │ ☑ OpenAI │                           │
-    │ ☑ DeepS  │                           │
-    │          │                           │
-    ├──────────┴───────────────────────────┤
-    │  [输入框]              [发送] [全体回复] │
+    │  标题栏：📢 {群名}    [聊天|群组]     │
+    ├──────────────────────────────────────┤
+    │  [聊天标签页]  │  [群组标签页]        │
+    │  成员 + 聊天   │  软件列表 + 卸载     │
     └──────────────────────────────────────┘
     """
     
@@ -222,10 +215,32 @@ class AIGroupChatPanel(QWidget):
         h_layout = QHBoxLayout(header)
         h_layout.setContentsMargins(16, 0, 16, 0)
         
-        title = QLabel(f"📢 {self.group_name} · AI 群聊")
+        title = QLabel(f"📢 {self.group_name}")
         title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {COLOR['accent_blue']};")
         h_layout.addWidget(title)
         h_layout.addStretch()
+        
+        # 标签页切换按钮
+        self.tab_btn_chat = QPushButton("💬 聊天")
+        self.tab_btn_chat.setFixedHeight(28)
+        self.tab_btn_chat.setStyleSheet(f"""
+            QPushButton {{ background: {COLOR['accent_blue']}; color: {COLOR['bg_tertiary']}; 
+                border: none; border-radius: 6px 0 0 6px; font-size: 11px; font-weight: bold; padding: 2px 10px; }}
+        """)
+        self.tab_btn_chat.clicked.connect(lambda: self._switch_tab(0))
+        h_layout.addWidget(self.tab_btn_chat)
+        
+        self.tab_btn_group = QPushButton("👥 群组")
+        self.tab_btn_group.setFixedHeight(28)
+        self.tab_btn_group.setStyleSheet(f"""
+            QPushButton {{ background: {COLOR['bg_tertiary']}; color: {COLOR['text_secondary']}; 
+                border: none; border-radius: 0 6px 6px 0; font-size: 11px; font-weight: bold; padding: 2px 10px; }}
+            QPushButton:hover {{ color: {COLOR['text_primary']}; }}
+        """)
+        self.tab_btn_group.clicked.connect(lambda: self._switch_tab(1))
+        h_layout.addWidget(self.tab_btn_group)
+        
+        h_layout.addSpacing(8)
         
         # 管理成员按钮
         self.member_btn = QPushButton("👥 成员")
@@ -238,20 +253,18 @@ class AIGroupChatPanel(QWidget):
         self.member_btn.clicked.connect(self._toggle_member_panel)
         h_layout.addWidget(self.member_btn)
         
-        clear_btn = QPushButton("清空")
-        clear_btn.setFixedSize(50, 26)
-        clear_btn.setStyleSheet(f"""
-            QPushButton {{ background: transparent; color: {COLOR['text_muted']}; 
-                border: 1px solid {COLOR['text_muted']}; border-radius: 4px; font-size: 11px; }}
-            QPushButton:hover {{ color: {COLOR['accent_red']}; border-color: {COLOR['accent_red']}; }}
-        """)
-        clear_btn.clicked.connect(self.clear_chat)
-        h_layout.addWidget(clear_btn)
-        
         layout.addWidget(header)
         
-        # ---- 主体：成员面板 + 聊天区 ----
-        body = QHBoxLayout()
+        # ---- 标签页容器 ----
+        self.tab_stack = QTabWidget()
+        self.tab_stack.tabBar().hide()  # 隐藏默认标签栏
+        self.tab_stack.setStyleSheet(f"""
+            QTabWidget::pane {{ border: none; background: {COLOR['chat_bg']}; }}
+        """)
+        
+        # ---- 标签页 0：聊天 ----
+        chat_page = QWidget()
+        body = QHBoxLayout(chat_page)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         
@@ -368,10 +381,253 @@ class AIGroupChatPanel(QWidget):
         
         c_layout.addWidget(input_bar)
         body.addWidget(chat_container, 1)
-        layout.addLayout(body, 1)
+        
+        self.tab_stack.addTab(chat_page, "聊天")
+        
+        # ---- 标签页 1：群组（软件管理） ----
+        self.group_page = QWidget()
+        self._init_group_page()
+        self.tab_stack.addTab(self.group_page, "群组")
+        
+        layout.addWidget(self.tab_stack, 1)
         
         self._scroll_area = scroll
         self._send_btn = send_btn
+    
+    def _init_group_page(self):
+        """初始化群组标签页：展示所有软件并可快速卸载"""
+        page_layout = QVBoxLayout(self.group_page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+        
+        # 顶部说明栏
+        info_bar = QWidget()
+        info_bar.setFixedHeight(40)
+        info_bar.setStyleSheet(f"background: {COLOR['bg_secondary']}; border-bottom: 1px solid {COLOR['bg_tertiary']};")
+        ib_layout = QHBoxLayout(info_bar)
+        ib_layout.setContentsMargins(16, 0, 16, 0)
+        
+        info_label = QLabel(f"📋 群组「{self.group_name}」管理的软件")
+        info_label.setStyleSheet(f"font-size: 12px; color: {COLOR['text_secondary']};")
+        ib_layout.addWidget(info_label)
+        ib_layout.addStretch()
+        
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.setFixedHeight(24)
+        refresh_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {COLOR['text_muted']}; 
+                border: 1px solid {COLOR['text_muted']}; border-radius: 4px; font-size: 10px; padding: 2px 8px; }}
+            QPushButton:hover {{ color: {COLOR['accent_blue']}; border-color: {COLOR['accent_blue']}; }}
+        """)
+        refresh_btn.clicked.connect(self._refresh_group_apps)
+        ib_layout.addWidget(refresh_btn)
+        
+        page_layout.addWidget(info_bar)
+        
+        # 软件列表滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {COLOR['chat_bg']}; }}")
+        
+        self.group_list_widget = QWidget()
+        self.group_list_widget.setStyleSheet(f"background: {COLOR['chat_bg']};")
+        self.group_list_layout = QVBoxLayout(self.group_list_widget)
+        self.group_list_layout.setContentsMargins(12, 12, 12, 12)
+        self.group_list_layout.setSpacing(6)
+        self.group_list_layout.addStretch()
+        
+        scroll.setWidget(self.group_list_widget)
+        page_layout.addWidget(scroll, 1)
+        
+        # 初始化时加载软件列表
+        self._refresh_group_apps()
+    
+    def _refresh_group_apps(self):
+        """刷新群组中的软件列表"""
+        # 清除旧项
+        for i in reversed(range(self.group_list_layout.count())):
+            item = self.group_list_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setParent(None)
+                item.widget().deleteLater()
+        
+        try:
+            from main import TARGET_APPS
+        except ImportError:
+            return
+        
+        import psutil
+        
+        for app_name, info in TARGET_APPS.items():
+            if app_name == "CodeBuddy Agent":
+                continue
+            card = self._create_app_card(app_name, info)
+            self.group_list_layout.insertWidget(self.group_list_layout.count() - 1, card)
+    
+    def _create_app_card(self, app_name: str, app_info: dict) -> QWidget:
+        """创建单个软件卡片"""
+        import psutil
+        from main import TARGET_APPS
+        
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{ background: {COLOR['bg_secondary']}; border: 1px solid {COLOR['bg_tertiary']}; 
+                border-radius: 8px; }}
+            QFrame:hover {{ border-color: {COLOR['accent_blue']}50; }}
+        """)
+        card.setFixedHeight(56)
+        
+        card_layout = QHBoxLayout(card)
+        card_layout.setContentsMargins(14, 8, 14, 8)
+        card_layout.setSpacing(10)
+        
+        # 软件图标（用首字代替）
+        icon_label = QLabel(app_name[0])
+        icon_label.setFixedSize(36, 36)
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet(f"""
+            background: {COLOR['accent_blue']}30; color: {COLOR['accent_blue']}; 
+            border-radius: 8px; font-size: 16px; font-weight: bold;
+        """)
+        card_layout.addWidget(icon_label)
+        
+        # 软件名称 + 进程信息
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(2)
+        
+        name_label = QLabel(app_name)
+        name_label.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {COLOR['text_primary']};")
+        info_layout.addWidget(name_label)
+        
+        # 进程状态
+        procs = app_info.get("procs", [])
+        status_text = "未运行"
+        status_color = COLOR['text_muted']
+        if procs:
+            try:
+                found = False
+                for p in psutil.process_iter(['name']):
+                    try:
+                        pname = p.info['name'].lower() if p.info['name'] else ""
+                        if any(tp.lower() == pname for tp in procs):
+                            found = True
+                            status_text = "运行中"
+                            status_color = COLOR['accent_green']
+                            break
+                    except Exception:
+                        pass
+                if not found:
+                    status_text = "未运行"
+            except Exception:
+                pass
+        
+        proc_label = QLabel(f"进程: {', '.join(procs[:2])} · {status_text}")
+        proc_label.setStyleSheet(f"font-size: 10px; color: {status_color};")
+        info_layout.addWidget(proc_label)
+        
+        card_layout.addLayout(info_layout, 1)
+        
+        # 操作按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(6)
+        
+        # 卸载按钮
+        uninstall_btn = QPushButton("🗑 卸载")
+        uninstall_btn.setFixedSize(64, 26)
+        uninstall_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {COLOR['accent_red']}; 
+                border: 1px solid {COLOR['accent_red']}; border-radius: 4px; font-size: 10px; }}
+            QPushButton:hover {{ background: {COLOR['accent_red']}20; }}
+        """)
+        uninstall_btn.clicked.connect(lambda checked, a=app_name: self._uninstall_app(a))
+        btn_layout.addWidget(uninstall_btn)
+        
+        # 结束进程按钮
+        kill_btn = QPushButton("✕ 结束")
+        kill_btn.setFixedSize(52, 26)
+        kill_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {COLOR['accent_yellow']}; 
+                border: 1px solid {COLOR['accent_yellow']}; border-radius: 4px; font-size: 10px; }}
+            QPushButton:hover {{ background: {COLOR['accent_yellow']}20; }}
+        """)
+        kill_btn.clicked.connect(lambda checked, a=app_name: self._kill_app_processes(a))
+        btn_layout.addWidget(kill_btn)
+        
+        card_layout.addLayout(btn_layout)
+        
+        return card
+    
+    def _uninstall_app(self, app_name: str):
+        """卸载软件（通过 Windows 卸载程序）"""
+        reply = QMessageBox.question(
+            self, "确认卸载", f"确定要卸载「{app_name}」吗？\n\n这将打开 Windows 卸载程序。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        
+        import subprocess
+        try:
+            subprocess.Popen(["appwiz.cpl"], shell=True)
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"无法打开卸载面板: {e}")
+    
+    def _kill_app_processes(self, app_name: str):
+        """结束应用所有进程"""
+        try:
+            from main import TARGET_APPS
+        except ImportError:
+            return
+        
+        import psutil
+        app_info = TARGET_APPS.get(app_name, {})
+        procs = app_info.get("procs", [])
+        if not procs:
+            QMessageBox.information(self, "提示", f"「{app_name}」没有配置进程信息。")
+            return
+        
+        killed = []
+        for p in psutil.process_iter(['pid', 'name']):
+            try:
+                pname = p.info['name'].lower() if p.info['name'] else ""
+                if any(tp.lower() == pname for tp in procs):
+                    psutil.Process(p.info['pid']).terminate()
+                    killed.append(p.info['name'])
+            except Exception:
+                pass
+        
+        if killed:
+            QMessageBox.information(self, "成功", f"已结束 {len(killed)} 个进程：\n{', '.join(killed)}")
+        else:
+            QMessageBox.information(self, "提示", f"「{app_name}」当前没有运行中的进程。")
+        
+        self._refresh_group_apps()
+    
+    def _switch_tab(self, index: int):
+        """切换标签页"""
+        self.tab_stack.setCurrentIndex(index)
+        if index == 0:
+            self.tab_btn_chat.setStyleSheet(f"""
+                QPushButton {{ background: {COLOR['accent_blue']}; color: {COLOR['bg_tertiary']}; 
+                    border: none; border-radius: 6px 0 0 6px; font-size: 11px; font-weight: bold; padding: 2px 10px; }}
+            """)
+            self.tab_btn_group.setStyleSheet(f"""
+                QPushButton {{ background: {COLOR['bg_tertiary']}; color: {COLOR['text_secondary']}; 
+                    border: none; border-radius: 0 6px 6px 0; font-size: 11px; font-weight: bold; padding: 2px 10px; }}
+                QPushButton:hover {{ color: {COLOR['text_primary']}; }}
+            """)
+        else:
+            self.tab_btn_group.setStyleSheet(f"""
+                QPushButton {{ background: {COLOR['accent_blue']}; color: {COLOR['bg_tertiary']}; 
+                    border: none; border-radius: 0 6px 6px 0; font-size: 11px; font-weight: bold; padding: 2px 10px; }}
+            """)
+            self.tab_btn_chat.setStyleSheet(f"""
+                QPushButton {{ background: {COLOR['bg_tertiary']}; color: {COLOR['text_secondary']}; 
+                    border: none; border-radius: 6px 0 0 6px; font-size: 11px; font-weight: bold; padding: 2px 10px; }}
+                QPushButton:hover {{ color: {COLOR['text_primary']}; }}
+            """)
+            # 刷新群组软件列表
+            self._refresh_group_apps()
     
     def _init_ai_members(self):
         """初始化 AI 成员（已配置 API Key 的自动加入）"""
