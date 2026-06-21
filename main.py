@@ -89,6 +89,7 @@ from ai_chat import AIChatManager, AI_PROVIDERS, ChatMessage
 from agent import AgentManager, ToolExecutor, tool_get_system_info, tool_list_all_processes
 from icon_extractor import IconCache
 from codebuddy_panel import CodeBuddyAgentPanel
+from group_chat import AIGroupChatPanel
 
 # ============================================================
 # [2] 常量配置
@@ -127,6 +128,9 @@ TARGET_APPS: Dict[str, dict] = dict(BUILTIN_APPS)
 
 # 用户手动添加到聊天的应用（可被 AI 服务商对话）
 USER_CHAT_APPS: Dict[str, dict] = {}
+
+# 内置聊天软件 → 打开群聊面板（飞书风格，AI 之间互相交流）
+CHAT_GROUP_APPS = {"微信", "QQ", "钉钉", "飞书", "腾讯会议"}
 
 # 系统进程黑名单（不会出现在扫描结果中）
 SCAN_BLACKLIST = {
@@ -1026,10 +1030,12 @@ class MainWindow(QMainWindow):
         self.system_monitor: Optional[SystemProcessMonitor] = None
         self.notification_hub: Optional[NotificationHub] = None
         self.toast_mgr: Optional[ToastManager] = None
-        self._current_view = "notifications"  # notifications / ai_chat / app_detail
+        self._current_view = "notifications"  # notifications / ai_chat / app_detail / group_chat
         self._ai_panel_indices: Dict[str, int] = {}
         self._codebuddy_panel: Optional[CodeBuddyAgentPanel] = None
         self._node_process: Optional[subprocess.Popen] = None
+        self._group_chat_panels: Dict[str, AIGroupChatPanel] = {}
+        self._group_chat_indices: Dict[str, int] = {}
 
         # 加载用户手动添加的聊天应用配置
         self._load_user_chat_apps()
@@ -1871,6 +1877,11 @@ class MainWindow(QMainWindow):
                 self._show_ai_chat(app_name, chat_provider)
                 return
 
+        # 内置聊天软件 → 打开飞书风格 AI 群聊面板
+        if app_name in CHAT_GROUP_APPS:
+            self._show_group_chat(app_name)
+            return
+
         # 扫描到的应用或没有 AI 绑定的内置应用 → 显示详情面板
         self._show_app_detail(app_name)
 
@@ -2081,6 +2092,25 @@ class MainWindow(QMainWindow):
 
         idx = self._ai_panel_indices.get(provider_key, 2)
         self.right_stack.setCurrentIndex(idx)
+
+    def _show_group_chat(self, app_name: str):
+        """显示飞书风格 AI 群聊面板（聊天软件专用）"""
+        self._current_view = "group_chat"
+
+        if app_name not in self._group_chat_panels:
+            panel = AIGroupChatPanel(app_name, self.ai_manager)
+            panel.settings_requested.connect(self._show_agent_settings)
+            idx = self.right_stack.addWidget(panel)
+            self._group_chat_panels[app_name] = panel
+            self._group_chat_indices[app_name] = idx
+
+        idx = self._group_chat_indices.get(app_name, 4)
+        self.right_stack.setCurrentIndex(idx)
+
+        # 刷新成员列表（API Key 可能已变更）
+        panel = self._group_chat_panels.get(app_name)
+        if panel:
+            panel.refresh_members()
 
     def _show_app_detail(self, app_name: str):
         """显示软件详情面板"""
@@ -2443,6 +2473,11 @@ class MainWindow(QMainWindow):
                 )
 
             QMessageBox.information(dialog, "成功", f"{provider.name} 智能体已就绪！\n\n你现在可以在对话中让它帮你管理软件了。")
+
+            # 刷新所有群聊面板的成员列表
+            for panel in self._group_chat_panels.values():
+                panel.refresh_members()
+
             dialog.accept()
 
         save_btn.clicked.connect(on_save)
