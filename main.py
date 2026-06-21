@@ -19,6 +19,7 @@ def _auto_install_dependencies():
         ("PySide6", "PySide6>=6.10"),
         ("psutil", "psutil"),
         ("pywin32", "pywin32"),
+        ("websocket", "websocket-client"),
     ]
     missing = []
     for module_name, pip_name in deps:
@@ -87,6 +88,7 @@ from notification_toast import ToastManager
 from ai_chat import AIChatManager, AI_PROVIDERS, ChatMessage
 from agent import AgentManager, ToolExecutor, tool_get_system_info, tool_list_all_processes
 from icon_extractor import IconCache
+from codebuddy_panel import CodeBuddyAgentPanel
 
 # ============================================================
 # [2] 常量配置
@@ -98,21 +100,43 @@ ICON_PATH = CONFIG_DIR / "app_icon.png"
 MONITOR_INTERVAL_MS = 3000
 SCAN_INTERVAL_SEC = 3.0
 
-# 被管理的目标软件（会显示在左侧列表）
+# 预定义的内置软件（AI 助手 + 聊天软件，始终显示在列表）
 # tombstone_mode: "suspend" = 挂起线程（聊天软件）, "kill" = 杀进程+重启（AI助手）
-TARGET_APPS = {
+BUILTIN_APPS = {
     # AI 助手 → 墓碑时 kill 进程（内存彻底释放），唤醒时重启
-    "千问": {"procs": ["qianwen.exe"], "exe_hint": "qianwen.exe", "ai_provider": "qianwen", "tombstone_mode": "kill"},
-    "元宝": {"procs": ["yuanbao.exe"], "exe_hint": "yuanbao.exe", "ai_provider": "yuanbao", "tombstone_mode": "kill"},
-    "豆包": {"procs": ["doubao.exe"], "exe_hint": "doubao.exe", "ai_provider": "doubao", "tombstone_mode": "kill"},
-    "ChatGPT": {"procs": ["chatgpt.exe"], "exe_hint": "chatgpt.exe", "ai_provider": None, "tombstone_mode": "kill"},
-    "Copilot": {"procs": ["microsoftcopilot.exe"], "exe_hint": "microsoftcopilot.exe", "ai_provider": None, "tombstone_mode": "kill"},
+    "千问": {"procs": ["qianwen.exe"], "exe_hint": "qianwen.exe", "ai_provider": "qianwen", "tombstone_mode": "kill", "builtin": True},
+    "元宝": {"procs": ["yuanbao.exe"], "exe_hint": "yuanbao.exe", "ai_provider": "yuanbao", "tombstone_mode": "kill", "builtin": True},
+    "豆包": {"procs": ["doubao.exe"], "exe_hint": "doubao.exe", "ai_provider": "doubao", "tombstone_mode": "kill", "builtin": True},
+    "ChatGPT": {"procs": ["chatgpt.exe"], "exe_hint": "chatgpt.exe", "ai_provider": None, "tombstone_mode": "kill", "builtin": True},
+    "Copilot": {"procs": ["microsoftcopilot.exe"], "exe_hint": "microsoftcopilot.exe", "ai_provider": None, "tombstone_mode": "kill", "builtin": True},
     # 聊天软件 → 墓碑时挂起线程（保持登录/接收消息）
-    "微信": {"procs": ["wechat.exe"], "exe_hint": "wechat.exe", "ai_provider": None, "tombstone_mode": "suspend"},
-    "QQ": {"procs": ["qq.exe", "qqguild.exe"], "exe_hint": "qq.exe", "ai_provider": None, "tombstone_mode": "suspend"},
-    "钉钉": {"procs": ["dingtalk.exe"], "exe_hint": "dingtalk.exe", "ai_provider": None, "tombstone_mode": "suspend"},
-    "飞书": {"procs": ["feishu.exe"], "exe_hint": "feishu.exe", "ai_provider": None, "tombstone_mode": "suspend"},
-    "腾讯会议": {"procs": ["wemeet.exe", "tencentmeeting.exe"], "exe_hint": "wemeet.exe", "ai_provider": None, "tombstone_mode": "suspend"},
+    "微信": {"procs": ["wechat.exe"], "exe_hint": "wechat.exe", "ai_provider": None, "tombstone_mode": "suspend", "builtin": True},
+    "QQ": {"procs": ["qq.exe", "qqguild.exe"], "exe_hint": "qq.exe", "ai_provider": None, "tombstone_mode": "suspend", "builtin": True},
+    "钉钉": {"procs": ["dingtalk.exe"], "exe_hint": "dingtalk.exe", "ai_provider": None, "tombstone_mode": "suspend", "builtin": True},
+    "飞书": {"procs": ["feishu.exe"], "exe_hint": "feishu.exe", "ai_provider": None, "tombstone_mode": "suspend", "builtin": True},
+    "腾讯会议": {"procs": ["wemeet.exe", "tencentmeeting.exe"], "exe_hint": "wemeet.exe", "ai_provider": None, "tombstone_mode": "suspend", "builtin": True},
+    # CodeBuddy Agent（内置 AI 助手，非进程管理）
+    "CodeBuddy Agent": {"procs": [], "exe_hint": "", "ai_provider": "__codebuddy__", "tombstone_mode": "suspend", "builtin": True},
+}
+
+# 运行时动态扫描到的应用（自动发现 + 手动添加的聊天应用）
+SCANNED_APPS: Dict[str, dict] = {}
+
+# 合并后的完整目标应用列表（供所有模块使用）
+TARGET_APPS: Dict[str, dict] = dict(BUILTIN_APPS)
+
+# 用户手动添加到聊天的应用（可被 AI 服务商对话）
+USER_CHAT_APPS: Dict[str, dict] = {}
+
+# 系统进程黑名单（不会出现在扫描结果中）
+SCAN_BLACKLIST = {
+    "system idle process", "system", "registry", "smss.exe", "csrss.exe",
+    "wininit.exe", "services.exe", "lsass.exe", "svchost.exe", "dwm.exe",
+    "winlogon.exe", "explorer.exe", "sihost.exe", "ctfmon.exe", "taskhostw.exe",
+    "dllhost.exe", "fontdrvhost.exe", "spoolsv.exe", "wlms.exe",
+    "runtimebroker.exe", "shellexperiencehost.exe", "searchindexer.exe",
+    "securityhealthservice.exe", "msmpeng.exe", "nis.exe", "smartscreen.exe",
+    "audiodg.exe", "conhost.exe", "python.exe", "pythonw.exe",
 }
 
 # Catppuccin Mocha 配色
@@ -225,6 +249,7 @@ class ResourceMonitorThread(QThread):
 class AppListItem(QFrame):
     """左侧软件列表的自定义项"""
     clicked = Signal(str)  # app_name
+    add_to_chat_requested = Signal(str)  # app_name - 右键"添加到聊天"
 
     STATUS_COLORS = {
         "running": "#a6e3a1",
@@ -236,7 +261,7 @@ class AppListItem(QFrame):
         "not_running": "#45475a",
     }
 
-    def __init__(self, app_name: str, icon: QIcon, parent=None):
+    def __init__(self, app_name: str, icon: QIcon, is_chat_app: bool = False, is_scanned: bool = False, parent=None):
         super().__init__(parent)
         self.app_name = app_name
         self._icon = icon
@@ -246,8 +271,47 @@ class AppListItem(QFrame):
         self._pids: List[int] = []
         self._hover = False
         self._selected = False
+        self._is_chat_app = is_chat_app  # 是否已添加到聊天
+        self._is_scanned = is_scanned    # 是否是扫描发现的
         self.setFixedHeight(64)
         self.setCursor(QCursor(Qt.PointingHandCursor))
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def set_chat_status(self, is_chat: bool):
+        self._is_chat_app = is_chat
+        self.update()
+
+    def is_chat_app(self) -> bool:
+        return self._is_chat_app
+
+    def _show_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{ background: {COLOR['bg_secondary']}; color: {COLOR['text_primary']}; 
+                border: 1px solid {COLOR['bg_tertiary']}; border-radius: 6px; padding: 4px; }}
+            QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
+            QMenu::item:selected {{ background: {COLOR['sidebar_hover']}; }}
+            QMenu::separator {{ height: 1px; background: {COLOR['bg_tertiary']}; margin: 4px 8px; }}
+        """)
+
+        if self._is_chat_app:
+            # 已在聊天中 → 移除
+            remove_action = menu.addAction("🗑 从聊天中移除")
+            remove_action.triggered.connect(lambda: self.add_to_chat_requested.emit("__remove__" + self.app_name))
+        else:
+            # 未在聊天中 → 添加
+            add_action = menu.addAction("💬 添加到聊天")
+            add_action.triggered.connect(lambda: self.add_to_chat_requested.emit(self.app_name))
+
+        # 只对扫描的应用显示添加/移除
+        if not self._is_scanned and self.app_name != "CodeBuddy Agent":
+            # 内置应用默认已可管理，但可以移除聊天绑定
+            if self._is_chat_app:
+                remove_action = menu.addAction("🗑 从聊天中移除")
+                remove_action.triggered.connect(lambda: self.add_to_chat_requested.emit("__remove__" + self.app_name))
+
+        menu.exec(self.mapToGlobal(pos))
 
     def update_state(self, pids: List[int], status: str, mem_mb: float, cpu: float):
         self._pids = pids
@@ -342,12 +406,15 @@ class AppListPanel(QWidget):
     """左侧软件列表（类似联系人列表）"""
     app_selected = Signal(str)  # app_name
     autostart_toggled = Signal(bool)  # enabled
+    add_to_chat_requested = Signal(str)  # app_name - 添加到聊天
+    remove_from_chat_requested = Signal(str)  # app_name - 从聊天移除
 
     def __init__(self, icon_cache: IconCache):
         super().__init__()
         self.icon_cache = icon_cache
         self._items: Dict[str, AppListItem] = {}
         self._selected_app: str = ""
+        self._scanned_apps: Set[str] = set()  # 追踪扫描到的应用名
         self._init_ui()
 
     def _init_ui(self):
@@ -434,13 +501,34 @@ class AppListPanel(QWidget):
     def populate_apps(self, target_apps: Dict):
         """填充软件列表"""
         for app_name in target_apps:
+            info = target_apps.get(app_name, {})
+            is_chat = app_name in USER_CHAT_APPS or info.get("ai_provider") == "__codebuddy__"
+            is_scanned = info.get("scanned", False)
             icon = self.icon_cache.get_icon(app_name, size=36)
-            item = AppListItem(app_name, icon)
+            item = AppListItem(app_name, icon, is_chat_app=is_chat, is_scanned=is_scanned)
             item.clicked.connect(self._on_item_clicked)
+            item.add_to_chat_requested.connect(self._on_add_to_chat)
             self.list_layout.addWidget(item)
             self._items[app_name] = item
 
         self.list_layout.addStretch()
+
+    def add_scanned_app(self, app_name: str, app_info: dict):
+        """动态添加扫描发现的应用到列表"""
+        if app_name in self._items:
+            return  # 已存在
+        is_chat = app_name in USER_CHAT_APPS
+        icon = self.icon_cache.get_icon(app_name, size=36)
+        item = AppListItem(app_name, icon, is_chat_app=is_chat, is_scanned=True)
+        item.clicked.connect(self._on_item_clicked)
+        item.add_to_chat_requested.connect(self._on_add_to_chat)
+        # 插入到 stretch 之前
+        self.list_layout.insertWidget(self.list_layout.count() - 1, item)
+        self._items[app_name] = item
+        self._scanned_apps.add(app_name)
+
+    def get_scanned_apps(self) -> Set[str]:
+        return self._scanned_apps
 
     def update_app_state(self, app_name: str, pids: List[int], status: str, mem_mb: float, cpu: float):
         """更新单个软件的状态"""
@@ -450,8 +538,21 @@ class AppListPanel(QWidget):
     def update_stats(self, total: int, suspended: int, active: int):
         self.stats_label.setText(f"管理: {total}  |  墓碑: {suspended}  |  活跃: {active}")
 
+    def set_chat_status(self, app_name: str, is_chat: bool):
+        """设置应用的聊天状态"""
+        if app_name in self._items:
+            self._items[app_name].set_chat_status(is_chat)
+
     def _on_item_clicked(self, app_name: str):
         self._select_app(app_name)
+
+    def _on_add_to_chat(self, app_name: str):
+        """处理右键菜单的添加/移除聊天"""
+        if app_name.startswith("__remove__"):
+            real_name = app_name[len("__remove__"):]
+            self.remove_from_chat_requested.emit(real_name)
+        else:
+            self.add_to_chat_requested.emit(app_name)
 
     def _select_app(self, app_name: str):
         self._selected_app = app_name
@@ -927,6 +1028,11 @@ class MainWindow(QMainWindow):
         self.toast_mgr: Optional[ToastManager] = None
         self._current_view = "notifications"  # notifications / ai_chat / app_detail
         self._ai_panel_indices: Dict[str, int] = {}
+        self._codebuddy_panel: Optional[CodeBuddyAgentPanel] = None
+        self._node_process: Optional[subprocess.Popen] = None
+
+        # 加载用户手动添加的聊天应用配置
+        self._load_user_chat_apps()
 
         self._init_ui()
         self._init_toast_manager()
@@ -960,6 +1066,8 @@ class MainWindow(QMainWindow):
         self.app_list.populate_apps(TARGET_APPS)
         self.app_list.app_selected.connect(self._on_app_selected)
         self.app_list.autostart_toggled.connect(self._set_autostart)
+        self.app_list.add_to_chat_requested.connect(self._on_add_app_to_chat)
+        self.app_list.remove_from_chat_requested.connect(self._on_remove_app_from_chat)
         main_layout.addWidget(self.app_list)
 
         # 分隔线
@@ -985,10 +1093,18 @@ class MainWindow(QMainWindow):
         self.detail_panel.kill_app.connect(self._kill_app)
         self.right_stack.addWidget(self.detail_panel)
 
+        # 页面 3：CodeBuddy Agent
+        self._codebuddy_panel = CodeBuddyAgentPanel()
+        self.right_stack.addWidget(self._codebuddy_panel)
+        self._codebuddy_page_index = self.right_stack.indexOf(self._codebuddy_panel)
+
         main_layout.addWidget(self.right_stack, 1)
 
         # 系统托盘
         self._init_tray()
+
+        # 启动 Node.js 后端服务
+        self._start_node_server()
 
         # 默认显示通知中心
         self.right_stack.setCurrentIndex(0)
@@ -1027,16 +1143,52 @@ class MainWindow(QMainWindow):
     def _tool_list_apps(self, args: dict) -> str:
         """列出 itent 管理的所有软件状态"""
         lines = ["当前 itent 管理的软件状态："]
+        count = 0
+        # 优先列出内置应用和用户添加的聊天应用
+        priority_apps = list(BUILTIN_APPS.keys()) + list(USER_CHAT_APPS.keys())
+        shown = set()
+        
+        # 先列优先应用
+        for app_name in priority_apps:
+            if app_name in TARGET_APPS and app_name not in shown:
+                info = TARGET_APPS[app_name]
+                tombstone_mode = info.get("tombstone_mode", "suspend")
+                pids = self._find_pids_for_app(app_name)
+                if not pids:
+                    if tombstone_mode == "kill":
+                        lines.append(f"  • {app_name} — 已墓碑 ❄️ (Kill模式)")
+                    else:
+                        lines.append(f"  • {app_name} — 未运行")
+                else:
+                    total_mem = 0.0
+                    status = "运行中"
+                    for pid in pids:
+                        try:
+                            p = psutil.Process(pid)
+                            total_mem += p.memory_info().rss / (1024 * 1024)
+                        except Exception:
+                            pass
+                        if self.process_mgr.is_suspended(pid):
+                            status = "已墓碑 ❄️"
+                        elif self.process_mgr.is_transient_wake(pid):
+                            status = "短暂唤醒 ⚡"
+                    lines.append(f"  • {app_name} — {status} | {total_mem:.1f} MB | {len(pids)} 进程")
+                shown.add(app_name)
+                count += 1
+
+        # 然后列扫描到的运行中的应用（最多10个）
+        scanned_count = 0
         for app_name, info in TARGET_APPS.items():
-            tombstone_mode = info.get("tombstone_mode", "suspend")
+            if app_name in shown:
+                continue
+            if not info.get("scanned"):
+                continue
             pids = self._find_pids_for_app(app_name)
             if not pids:
-                if tombstone_mode == "kill":
-                    lines.append(f"  • {app_name} — 已墓碑 ❄️ (Kill模式)")
-                else:
-                    lines.append(f"  • {app_name} — 未运行")
-                continue
-
+                continue  # 只显示运行中的扫描应用
+            if scanned_count >= 15:
+                lines.append(f"  ... 还有更多扫描到的应用（共 {len(SCANNED_APPS)} 个）")
+                break
             total_mem = 0.0
             status = "运行中"
             for pid in pids:
@@ -1049,8 +1201,8 @@ class MainWindow(QMainWindow):
                     status = "已墓碑 ❄️"
                 elif self.process_mgr.is_transient_wake(pid):
                     status = "短暂唤醒 ⚡"
-
             lines.append(f"  • {app_name} — {status} | {total_mem:.1f} MB | {len(pids)} 进程")
+            scanned_count += 1
 
         return "\n".join(lines)
 
@@ -1158,9 +1310,13 @@ class MainWindow(QMainWindow):
         return f"正在启动「{app_name}」..."
 
     def _tool_optimize(self, args: dict) -> str:
-        """一键优化：墓碑所有非活跃软件"""
+        """一键优化：墓碑所有非活跃软件（仅优化内置应用和用户添加的聊天应用）"""
         suspended = []
-        for app_name in TARGET_APPS:
+        # 只优化内置应用和用户添加的聊天应用，不优化扫描到的其他应用
+        optimizable_apps = set(BUILTIN_APPS.keys()) | set(USER_CHAT_APPS.keys())
+        for app_name in optimizable_apps:
+            if app_name not in TARGET_APPS:
+                continue
             tombstone_mode = TARGET_APPS.get(app_name, {}).get("tombstone_mode", "suspend")
             pids = self._find_pids_for_app(app_name)
 
@@ -1216,6 +1372,51 @@ class MainWindow(QMainWindow):
             self.activateWindow()
 
     # ============================================================
+    # Node.js 后端管理
+    # ============================================================
+    def _start_node_server(self):
+        """启动 Node.js CodeBuddy Agent 后端服务"""
+        import subprocess
+        server_dir = Path(__file__).parent / "server"
+        server_script = server_dir / "agent_server.cjs"
+
+        if not server_script.exists():
+            print("[itent] 后端脚本不存在: " + str(server_script))
+            return
+
+        env = os.environ.copy()
+        # CodeBuddy API Key（用户提供的密钥）
+        env["CODEBUDDY_API_KEY"] = "sk-cqed590671qvclwp4tc1f3gifvivdksurb9ivnbhxhufzqru"
+        env["CODEBUDDY_INTERNET_ENVIRONMENT"] = "internal"
+
+        try:
+            self._node_process = subprocess.Popen(
+                ["node", str(server_script)],
+                cwd=str(server_dir),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            print("[itent] CodeBuddy Agent 后端已启动 (PID: {})".format(self._node_process.pid))
+        except Exception as e:
+            print("[itent] 启动后端失败: " + str(e))
+
+    def _stop_node_server(self):
+        """停止 Node.js 后端"""
+        if self._node_process:
+            try:
+                self._node_process.terminate()
+                self._node_process.wait(timeout=5)
+                print("[itent] CodeBuddy Agent 后端已停止")
+            except Exception:
+                try:
+                    self._node_process.kill()
+                except Exception:
+                    pass
+            self._node_process = None
+
+    # ============================================================
     # 开机自启动（注册表）
     # ============================================================
     def _set_autostart(self, enable: bool):
@@ -1257,11 +1458,13 @@ class MainWindow(QMainWindow):
     def _start_system_monitor(self):
         def on_new_process(pid, name):
             self.process_mgr.add_managed_pid(pid, name)
+            # 如果是新发现的进程，自动添加到扫描列表和 UI
+            self._on_new_process_discovered(pid, name)
 
         def on_process_exit(pid):
             self.process_mgr.remove_managed_pid(pid)
 
-        # 收集所有目标进程名（小写）
+        # 收集所有目标进程名（小写）：内置 + 已扫描
         target_names = set()
         for info in TARGET_APPS.values():
             for p in info["procs"]:
@@ -1273,6 +1476,113 @@ class MainWindow(QMainWindow):
             interval=SCAN_INTERVAL_SEC
         )
         self.system_monitor.start()
+
+        # 初次扫描：扫描当前所有运行的非系统进程
+        QTimer.singleShot(1000, self._initial_scan_all_processes)
+
+    def _initial_scan_all_processes(self):
+        """初次启动时扫描所有运行的非系统进程，自动加入列表"""
+        try:
+            for p in psutil.process_iter(attrs=["pid", "name", "exe"]):
+                try:
+                    name = (p.info["name"] or "").lower()
+                    pid = p.info["pid"]
+                    # 跳过黑名单进程
+                    if name in SCAN_BLACKLIST:
+                        continue
+                    # 跳过已在内置列表中的
+                    already_managed = False
+                    for info in TARGET_APPS.values():
+                        for proc_name in info.get("procs", []):
+                            if proc_name.lower() == name:
+                                already_managed = True
+                                break
+                        if already_managed:
+                            break
+                    if already_managed:
+                        continue
+                    # 跳过系统核心进程
+                    if _is_core_process(name):
+                        continue
+                    # 跳过小于 10MB 内存的进程（减少噪音）
+                    mem_mb = p.info.get("memory_info", None)
+                    if mem_mb is None:
+                        try:
+                            mem_mb = p.memory_info().rss / (1024 * 1024)
+                        except Exception:
+                            mem_mb = 0
+                    if mem_mb < 10:
+                        continue
+
+                    # 生成友好的应用名
+                    display_name = name.replace(".exe", "").replace(".EXE", "").title()
+                    if display_name not in SCANNED_APPS:
+                        exe_path = p.info.get("exe") or ""
+                        SCANNED_APPS[display_name] = {
+                            "procs": [name],
+                            "exe_hint": exe_path or name,
+                            "ai_provider": None,
+                            "tombstone_mode": "suspend",
+                            "builtin": False,
+                            "scanned": True,
+                        }
+                        TARGET_APPS[display_name] = SCANNED_APPS[display_name]
+                        self.app_list.add_scanned_app(display_name, SCANNED_APPS[display_name])
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            # 更新系统监控的目标进程列表
+            self._update_monitor_targets()
+        except Exception:
+            pass
+
+    def _on_new_process_discovered(self, pid: int, name: str):
+        """当系统监控发现新进程时，动态添加到列表"""
+        name_lower = name.lower()
+        # 检查是否是已知应用的进程
+        for app_name, info in TARGET_APPS.items():
+            for proc_name in info.get("procs", []):
+                if proc_name.lower() == name_lower:
+                    return  # 已存在
+
+        # 跳过黑名单
+        if name_lower in SCAN_BLACKLIST:
+            return
+        if _is_core_process(name_lower):
+            return
+
+        # 新进程，添加到扫描列表
+        display_name = name_lower.replace(".exe", "").replace(".EXE", "").title()
+        if display_name not in SCANNED_APPS:
+            try:
+                p = psutil.Process(pid)
+                exe_path = (p.exe() or "")
+                mem_mb = p.memory_info().rss / (1024 * 1024)
+                if mem_mb < 5:  # 太小的进程忽略
+                    return
+            except Exception:
+                exe_path = name_lower
+
+            SCANNED_APPS[display_name] = {
+                "procs": [name_lower],
+                "exe_hint": exe_path or name_lower,
+                "ai_provider": None,
+                "tombstone_mode": "suspend",
+                "builtin": False,
+                "scanned": True,
+            }
+            TARGET_APPS[display_name] = SCANNED_APPS[display_name]
+            self.app_list.add_scanned_app(display_name, SCANNED_APPS[display_name])
+            self._update_monitor_targets()
+
+    def _update_monitor_targets(self):
+        """更新系统监控的目标进程名集合"""
+        if self.system_monitor:
+            target_names = set()
+            for info in TARGET_APPS.values():
+                for p in info.get("procs", []):
+                    target_names.add(p.lower())
+            self.system_monitor.set_target_procs(target_names)
 
     def _start_resource_monitor(self):
         self.monitor_thread = ResourceMonitorThread(
@@ -1403,20 +1713,31 @@ class MainWindow(QMainWindow):
             pass
 
     def _apply_tombstone_policy(self):
-        """只对 TARGET_APPS 中的软件进程做墓碑决策。
+        """只对内建应用和用户添加的聊天应用做墓碑决策。
         支持两种模式：
         - "suspend": 挂起线程（聊天软件），保留内存状态
         - "kill": 杀进程（AI 助手），彻底释放内存
+        扫描到的其他应用不会被自动墓碑，仅作监控展示。
         """
+        # 只对内置应用和用户添加的聊天应用做墓碑决策
         managed_pids = self.process_mgr.get_all_managed_pids()
+        tombstone_apps = set(BUILTIN_APPS.keys()) | set(USER_CHAT_APPS.keys())
+
+        # 过滤：只保留属于可墓碑应用的 PID
+        tombstone_pids = []
+        for pid in managed_pids:
+            app_name = self._find_app_name_for_pid(pid)
+            if app_name and app_name in tombstone_apps:
+                tombstone_pids.append(pid)
+
         now = time.time()
 
         # 调试日志
         debug_log = CONFIG_DIR / "tombstone_debug.log"
         try:
             with open(debug_log, "a", encoding="utf-8") as f:
-                f.write(f"\n[{datetime.now().isoformat()}] _apply_tombstone_policy: {len(managed_pids)} managed pids\n")
-                for pid in managed_pids:
+                f.write(f"\n[{datetime.now().isoformat()}] _apply_tombstone_policy: {len(managed_pids)} managed pids, {len(tombstone_pids)} tombstoneable\n")
+                for pid in tombstone_pids:
                     try:
                         p = psutil.Process(pid)
                         f.write(f"  PID {pid}: {p.name()} suspended={self.process_mgr.is_suspended(pid)} transient={self.process_mgr.is_transient_wake(pid)}\n")
@@ -1428,7 +1749,7 @@ class MainWindow(QMainWindow):
         # 检查短暂唤醒是否过期
         self.process_mgr.check_transient_wake_expiry()
 
-        for pid in managed_pids:
+        for pid in tombstone_pids:
             try:
                 # 查找此 PID 属于哪个 app（用于获取 tombstone_mode）
                 app_name = self._find_app_name_for_pid(pid)
@@ -1531,16 +1852,213 @@ class MainWindow(QMainWindow):
             self._show_notifications()
             return
 
-        # 检查是否有 AI 对话
+        # 检查是否 CodeBuddy Agent
+        if app_name == "CodeBuddy Agent":
+            self._show_codebuddy_agent()
+            return
+
+        # 检查是否有预定义的 AI 对话（千问/元宝/豆包）
         ai_provider = TARGET_APPS.get(app_name, {}).get("ai_provider")
-        if ai_provider:
+        if ai_provider and ai_provider != "__codebuddy__":
             self._show_ai_chat(app_name, ai_provider)
-        else:
-            self._show_app_detail(app_name)
+            return
+
+        # 检查是否用户手动添加到了聊天中
+        if app_name in USER_CHAT_APPS:
+            chat_info = USER_CHAT_APPS[app_name]
+            chat_provider = chat_info.get("ai_provider", "")
+            if chat_provider:
+                self._show_ai_chat(app_name, chat_provider)
+                return
+
+        # 扫描到的应用或没有 AI 绑定的内置应用 → 显示详情面板
+        self._show_app_detail(app_name)
+
+    def _on_add_app_to_chat(self, app_name: str):
+        """将应用添加到聊天面板（让其他 AI 服务商可以对话管理）"""
+        self._show_add_to_chat_dialog(app_name)
+
+    def _on_remove_app_from_chat(self, app_name: str):
+        """将应用从聊天面板中移除"""
+        if app_name in USER_CHAT_APPS:
+            del USER_CHAT_APPS[app_name]
+            self.app_list.set_chat_status(app_name, False)
+            # 保存到配置
+            self._save_user_chat_apps()
+
+    def _show_add_to_chat_dialog(self, app_name: str):
+        """显示'添加到聊天'对话框，让用户选择 AI 服务商"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"添加到聊天 — {app_name}")
+        dialog.setFixedSize(420, 320)
+        dialog.setStyleSheet(f"""
+            QDialog {{ background: {COLOR['bg_primary']}; }}
+            QLabel {{ color: {COLOR['text_primary']}; font-size: 13px; }}
+            QPushButton {{ border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: bold; }}
+            QGroupBox {{ color: {COLOR['text_primary']}; border: 1px solid {COLOR['bg_tertiary']};
+                border-radius: 8px; margin-top: 16px; padding-top: 20px; font-size: 13px; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        title = QLabel(f"💬 将「{app_name}」添加到聊天")
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {COLOR['accent_blue']};")
+        layout.addWidget(title)
+
+        desc = QLabel("选择一个 AI 服务商来管理此应用。\n配置 API Key 后，即可通过对话管理该应用的进程。")
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {COLOR['text_secondary']}; font-size: 12px;")
+        layout.addWidget(desc)
+
+        # AI 服务商选择
+        provider_group = QGroupBox("AI 服务商")
+        provider_layout = QVBoxLayout(provider_group)
+
+        provider_combo = QComboBox()
+        provider_combo.setStyleSheet(f"""
+            QComboBox {{ background: {COLOR['bg_secondary']}; color: {COLOR['text_primary']};
+                border: 1px solid {COLOR['bg_tertiary']}; border-radius: 6px; padding: 8px 12px; font-size: 13px; }}
+            QComboBox::drop-down {{ border: none; width: 24px; }}
+            QComboBox QAbstractItemView {{ background: {COLOR['bg_secondary']}; color: {COLOR['text_primary']};
+                selection-background-color: {COLOR['sidebar_hover']}; border: 1px solid {COLOR['bg_tertiary']}; }}
+        """)
+
+        # 列出可用的 AI 服务商
+        available_providers = []
+        for key, cfg in AI_PROVIDERS.items():
+            if key != "custom":
+                has_key = self.ai_manager.has_key(key)
+                status = " ✓" if has_key else " (未配置)"
+                provider_combo.addItem(f"{cfg.name}{status}", key)
+                available_providers.append(key)
+
+        provider_layout.addWidget(provider_combo)
+        layout.addWidget(provider_group)
+
+        # 墓碑模式选择
+        mode_group = QGroupBox("墓碑模式")
+        mode_layout = QVBoxLayout(mode_group)
+
+        mode_combo = QComboBox()
+        mode_combo.setStyleSheet(f"""
+            QComboBox {{ background: {COLOR['bg_secondary']}; color: {COLOR['text_primary']};
+                border: 1px solid {COLOR['bg_tertiary']}; border-radius: 6px; padding: 8px 12px; font-size: 13px; }}
+            QComboBox::drop-down {{ border: none; width: 24px; }}
+            QComboBox QAbstractItemView {{ background: {COLOR['bg_secondary']}; color: {COLOR['text_primary']};
+                selection-background-color: {COLOR['sidebar_hover']}; border: 1px solid {COLOR['bg_tertiary']}; }}
+        """)
+        mode_combo.addItem("挂起（冻结线程，保留状态）", "suspend")
+        mode_combo.addItem("Kill（关闭进程，彻底释放内存）", "kill")
+        mode_layout.addWidget(mode_combo)
+
+        # 根据应用类型默认选择墓碑模式
+        app_info = TARGET_APPS.get(app_name, {})
+        if app_info.get("tombstone_mode") == "kill":
+            mode_combo.setCurrentIndex(1)
+
+        layout.addWidget(mode_group)
+
+        layout.addStretch()
+
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {COLOR['text_secondary']};
+                border: 1px solid {COLOR['bg_tertiary']}; }}
+            QPushButton:hover {{ background: {COLOR['bg_secondary']}; }}
+        """)
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        add_btn = QPushButton("添加到聊天")
+        add_btn.setStyleSheet(f"""
+            QPushButton {{ background: {COLOR['accent_blue']}; color: {COLOR['bg_primary']}; border: none; }}
+            QPushButton:hover {{ background: {COLOR['accent_teal']}; }}
+        """)
+
+        def on_add():
+            provider_key = provider_combo.currentData()
+            tombstone_mode = mode_combo.currentData()
+            if not provider_key:
+                return
+
+            # 检查是否已配置 API Key
+            if not self.ai_manager.has_key(provider_key):
+                reply = QMessageBox.question(
+                    dialog, "未配置 API Key",
+                    f"该 AI 服务商尚未配置 API Key。\n\n是否现在去配置？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    dialog.accept()
+                    self._show_agent_settings(provider_key)
+                    return
+                else:
+                    return
+
+            # 保存到用户聊天应用列表
+            USER_CHAT_APPS[app_name] = {
+                "ai_provider": provider_key,
+                "tombstone_mode": tombstone_mode,
+            }
+            # 同时更新 TARGET_APPS（如果已存在则更新 ai_provider）
+            if app_name in TARGET_APPS:
+                TARGET_APPS[app_name]["ai_provider"] = provider_key
+                TARGET_APPS[app_name]["tombstone_mode"] = tombstone_mode
+
+            self.app_list.set_chat_status(app_name, True)
+            self._save_user_chat_apps()
+            dialog.accept()
+
+            # 自动切换到该 AI 聊天面板
+            self._show_ai_chat(app_name, provider_key)
+
+        add_btn.clicked.connect(on_add)
+        btn_layout.addWidget(add_btn)
+        layout.addLayout(btn_layout)
+
+        dialog.exec()
+
+    def _save_user_chat_apps(self):
+        """持久化用户手动添加的聊天应用到配置文件"""
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
+            data["user_chat_apps"] = USER_CHAT_APPS
+            CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_user_chat_apps(self):
+        """从配置文件加载用户手动添加的聊天应用"""
+        try:
+            if CONFIG_FILE.exists():
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                saved = data.get("user_chat_apps", {})
+                USER_CHAT_APPS.clear()
+                USER_CHAT_APPS.update(saved)
+                # 同步到 TARGET_APPS
+                for app_name, info in USER_CHAT_APPS.items():
+                    if app_name in TARGET_APPS:
+                        TARGET_APPS[app_name]["ai_provider"] = info.get("ai_provider")
+                        TARGET_APPS[app_name]["tombstone_mode"] = info.get("tombstone_mode", "suspend")
+        except Exception:
+            pass
 
     def _show_notifications(self):
         self._current_view = "notifications"
         self.right_stack.setCurrentIndex(0)
+
+    def _show_codebuddy_agent(self):
+        """显示 CodeBuddy Agent 面板"""
+        self._current_view = "codebuddy_agent"
+        self.right_stack.setCurrentIndex(self._codebuddy_page_index)
 
     def _show_ai_chat(self, app_name: str, provider_key: str):
         """显示 AI 对话面板"""
@@ -1946,6 +2464,8 @@ class MainWindow(QMainWindow):
 
     def _cleanup_and_exit(self):
         try:
+            # 停止 Node.js 后端
+            self._stop_node_server()
             if hasattr(self, 'notification_hub') and self.notification_hub:
                 self.notification_hub.stop()
             if hasattr(self, 'toast_mgr') and self.toast_mgr:
